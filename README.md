@@ -61,6 +61,7 @@ The server ships with a few built-in commands (they can be overridden by user ha
 | `!broadcast`  | Broadcast a message to all clients |
 | `!mute`       | Mute broadcasts from that client   |
 | `!unmute`     | Unmute broadcasts                  |
+
 You can override any built-in command by registering a handler with the same command.
 
 ---
