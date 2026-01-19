@@ -29,6 +29,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.tonyguerra.net.tcpmaster.core.components.ProgressCallback;
 import com.tonyguerra.net.tcpmaster.di.Container;
 import com.tonyguerra.net.tcpmaster.enums.TcpType;
 import com.tonyguerra.net.tcpmaster.errors.TcpException;
@@ -268,7 +269,7 @@ public final class TcpClient implements Closeable {
         return response;
     }
 
-    public void sendBinary(InputStream data, long size) throws IOException {
+    public void sendBinary(InputStream data, long size, ProgressCallback progress) throws IOException {
         if (data == null) {
             throw new IllegalArgumentException("data must not be null");
         }
@@ -289,6 +290,9 @@ public final class TcpClient implements Closeable {
 
             final byte[] buffer = new byte[8192];
             long remaining = size;
+            long sent = 0;
+
+            int lastPercent = -1;
 
             while (remaining > 0) {
                 int toRead = (int) Math.min(buffer.length, remaining);
@@ -300,14 +304,30 @@ public final class TcpClient implements Closeable {
                 }
 
                 outStream.write(buffer, 0, read);
+                sent += read;
                 remaining -= read;
+
+                if (progress != null) {
+                    final int percent = (int) ((sent * 100) / size);
+                    progress.onProgress(sent, percent);
+                }
             }
 
             outStream.flush();
+
+            // ensure 100% callback
+            if (progress != null && lastPercent != 100) {
+                progress.onProgress(size, size);
+            }
         }
     }
 
-    public String uploadFile(Path localFile, String remotePath) throws TcpException, IOException {
+    public void sendBinary(InputStream data, long size) throws IOException {
+        sendBinary(data, size, null);
+    }
+
+    public String uploadFile(Path localFile, String remotePath, ProgressCallback progress)
+            throws TcpException, IOException {
         if (localFile == null) {
             throw new IllegalArgumentException("localFile must not be null");
         }
@@ -344,15 +364,19 @@ public final class TcpClient implements Closeable {
 
         // 2) Send bytes
         try (final var is = Files.newInputStream(localFile)) {
-            sendBinary(is, size);
+            sendBinary(is, size, progress);
         }
 
         // 3) Read confirmation (OK STORED ...)
         return readNextResponse();
     }
 
+    public String uploadFile(Path localFile, ProgressCallback callback) throws TcpException, IOException {
+        return uploadFile(localFile, localFile.getFileName().toString(), callback);
+    }
+
     public String uploadFile(Path localFile) throws TcpException, IOException {
-        return uploadFile(localFile, localFile.getFileName().toString());
+        return uploadFile(localFile, localFile.getFileName().toString(), null);
     }
 
     public String readNextResponse(long timeoutMs) throws TcpException {
