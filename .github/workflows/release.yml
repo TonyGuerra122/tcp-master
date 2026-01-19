@@ -1,43 +1,24 @@
 name: Release to Maven Central
 
 on:
-  workflow_run:
-    workflows: ["Test"]
-    types: [completed]
+  push:
+    tags:
+      - "v*.*.*"
 
 permissions:
   contents: write
 
 jobs:
   deploy:
-    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository (at tested commit)
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
-      - name: Resolve tag (must be v*.*.*)
-        id: tag
-        run: |
-          TAG="$(git tag --points-at ${{ github.event.workflow_run.head_sha }} | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)"
-          if [ -z "$TAG" ]; then
-            echo "No semver tag found for this commit. Skipping."
-            echo "found=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
-          echo "found=true" >> $GITHUB_OUTPUT
-
-      - name: Stop if no release tag
-        if: steps.tag.outputs.found != 'true'
-        run: echo "Not a release tag commit. Done."
-
       - name: Set up JDK 21 + Maven Central credentials
-        if: steps.tag.outputs.found == 'true'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -48,7 +29,6 @@ jobs:
           server-password: CENTRAL_PASSWORD
 
       - name: Import GPG key
-        if: steps.tag.outputs.found == 'true'
         run: |
           echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
           gpg --list-secret-keys --keyid-format=long
@@ -56,23 +36,21 @@ jobs:
           GPG_TTY: /dev/tty
 
       - name: Deploy to Maven Central
-        if: steps.tag.outputs.found == 'true'
         run: |
-          mvn -B -ntp clean deploy -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}"
+          mvn -B -ntp clean deploy \
+            -Dgpg.passphrase="${{ secrets.GPG_PASSPHRASE }}"
         env:
           CENTRAL_USERNAME: ${{ secrets.CENTRAL_USERNAME }}
           CENTRAL_PASSWORD: ${{ secrets.CENTRAL_PASSWORD }}
 
-      - name: Build artifacts for release upload
-        if: steps.tag.outputs.found == 'true'
+      - name: Build artifacts for GitHub Release
         run: mvn -B -ntp -DskipTests package
 
-      - name: Create GitHub Release and upload jars
-        if: steps.tag.outputs.found == 'true'
+      - name: Create GitHub Release and upload artifacts
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.tag }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           generate_release_notes: true
           files: |
             target/*.jar
