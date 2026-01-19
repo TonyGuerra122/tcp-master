@@ -12,6 +12,8 @@ import java.lang.reflect.Modifier;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -303,6 +305,58 @@ public final class TcpClient implements Closeable {
 
             outStream.flush();
         }
+    }
+
+    public String uploadFile(Path localFile, String remotePath) throws TcpException, IOException {
+        if (localFile == null) {
+            throw new IllegalArgumentException("localFile must not be null");
+        }
+
+        if (remotePath == null || remotePath.isBlank()) {
+            throw new IllegalArgumentException("remotePath must not be null/blank");
+        }
+
+        // Optional: keep protocol simple
+        if (remotePath.contains(" ")) {
+            throw new IllegalArgumentException("remotePath must not contain spaces");
+        }
+
+        if (!Files.exists(localFile) || !Files.isRegularFile(localFile)) {
+            throw new IOException("Local file not found or not a regular file: " + localFile);
+        }
+
+        if (!connected.get()) {
+            throw new TcpException("No Server Connected");
+        }
+
+        final long size = Files.size(localFile);
+        if (size <= 0) {
+            throw new IOException("File is empty or size is invalid: " + localFile);
+        }
+
+        // 1) Tell server what is coming (NO extra "size" token)
+        final String initResp = sendMessage(String.format("!file.put %s %d", remotePath, size), false);
+
+        // Only keep this check if your server actually returns "OK ..."
+        // if (!initResp.startsWith("OK")) {
+        // throw new TcpException("Server refused upload: " + initResp);
+        // }
+
+        // 2) Send bytes
+        try (InputStream is = Files.newInputStream(localFile)) {
+            sendBinary(is, size);
+        }
+
+        // 3) Read confirmation (OK STORED ...)
+        return readNextResponse();
+    }
+
+    public String uploadFile(Path localFile) throws TcpException, IOException {
+        return uploadFile(localFile, localFile.getFileName().toString());
+    }
+
+    public String uploadFile(Path localFile) throws TcpException, IOException {
+        return uploadFile(localFile, localFile.getFileName().toString());
     }
 
     public String readNextResponse(long timeoutMs) throws TcpException {
