@@ -3,7 +3,9 @@ package com.tonyguerra.net.tcpmaster.core;
 import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
@@ -262,6 +264,72 @@ public final class TcpClient implements Closeable {
         if (response == null)
             throw new TcpException("Timeout waiting server response");
         return response;
+    }
+
+    public void sendBinary(InputStream data, long size) throws IOException {
+        if (data == null) {
+            throw new IllegalArgumentException("data must not be null");
+        }
+        if (size <= 0) {
+            throw new IllegalArgumentException("size must be > 0");
+        }
+        if (!connected.get()) {
+            throw new IOException("Client not connected");
+        }
+
+        // IMPORTANT: Prevent text writes while binary is being sent
+        synchronized (lifecycleLock) {
+            if (socket == null || socket.isClosed()) {
+                throw new IOException("Socket is closed");
+            }
+
+            final OutputStream outStream = socket.getOutputStream();
+
+            final byte[] buffer = new byte[8192];
+            long remaining = size;
+
+            while (remaining > 0) {
+                int toRead = (int) Math.min(buffer.length, remaining);
+                int read = data.read(buffer, 0, toRead);
+
+                if (read == -1) {
+                    throw new IOException(
+                            "InputStream ended before sending expected " + size + " bytes");
+                }
+
+                outStream.write(buffer, 0, read);
+                remaining -= read;
+            }
+
+            outStream.flush();
+        }
+    }
+
+    public String readNextResponse(long timeoutMs) throws TcpException {
+        if (timeoutMs <= 0) {
+            throw new IllegalArgumentException("timeoutMs must be > 0");
+        }
+
+        if (!connected.get()) {
+            throw new TcpException("No Server Connected");
+        }
+
+        try {
+            final String response = responses.poll(timeoutMs, TimeUnit.MILLISECONDS);
+
+            if (response == null) {
+                throw new TcpException("Timeout waiting server response");
+            }
+
+            return response;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new TcpException("Interrupted while waiting server response");
+        }
+    }
+
+    public String readNextResponse() throws TcpException {
+        return readNextResponse(responseTimeoutMs);
     }
 
     public void disconnect() throws TcpException {
