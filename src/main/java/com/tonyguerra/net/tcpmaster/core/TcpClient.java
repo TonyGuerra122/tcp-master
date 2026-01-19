@@ -338,21 +338,17 @@ public final class TcpClient implements Closeable {
         final String initResp = sendMessage(String.format("!file.put %s %d", remotePath, size), false);
 
         // Only keep this check if your server actually returns "OK ..."
-        // if (!initResp.startsWith("OK")) {
-        // throw new TcpException("Server refused upload: " + initResp);
-        // }
+        if (!initResp.startsWith("OK")) {
+            throw new TcpException("Server refused upload: " + initResp);
+        }
 
         // 2) Send bytes
-        try (InputStream is = Files.newInputStream(localFile)) {
+        try (final var is = Files.newInputStream(localFile)) {
             sendBinary(is, size);
         }
 
         // 3) Read confirmation (OK STORED ...)
         return readNextResponse();
-    }
-
-    public String uploadFile(Path localFile) throws TcpException, IOException {
-        return uploadFile(localFile, localFile.getFileName().toString());
     }
 
     public String uploadFile(Path localFile) throws TcpException, IOException {
