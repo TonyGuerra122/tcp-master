@@ -1,16 +1,17 @@
 package com.tonyguerra.net.tcpmaster.core;
 
-import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.IOException;
-import java.io.InputStreamReader;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.ServerSocket;
 import java.net.Socket;
-import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -19,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.tonyguerra.net.tcpmaster.core.components.LineReader;
 import com.tonyguerra.net.tcpmaster.di.Container;
 import com.tonyguerra.net.tcpmaster.enums.TcpType;
 import com.tonyguerra.net.tcpmaster.errors.TcpException;
@@ -111,17 +113,41 @@ public final class TcpServer implements Closeable {
     }
 
     private void handleClient(ClientConnection conn) {
-        // REMOVE THIS (race condition with multiple clients)
-        // container.registerInstance(Socket.class, conn.socket);
-
         try {
-            String message;
-            while ((message = conn.in.readLine()) != null) {
+            while (true) {
+
+                if (conn.binaryMode) {
+                    final long bytes = conn.binaryRemaining;
+                    conn.binaryMode = false;
+                    conn.binaryRemaining = 0;
+
+                    final var target = conn.getPendingBinaryTarget();
+                    conn.setPendingBinaryTarget(null);
+
+                    if (target == null) {
+                        // No target defined -> just drain to keep protocol consistent
+                        drain(conn, bytes);
+                        conn.out.println("ERROR No pending file target");
+                        conn.out.flush();
+                        continue;
+                    }
+
+                    receiveToFile(conn, bytes, target);
+
+                    conn.out.println("OK STORED " + target.getFileName());
+                    conn.out.flush();
+                    continue;
+                }
+
+                final String message = conn.lineReader.readLineUtf8();
+                if (message == null)
+                    break;
+
                 LOGGER.info("📨 Received from {}: {}", conn.id(), message);
 
                 if (message.startsWith("!")) {
                     final String commandKey = extractCommandKey(message);
-                    final String response = handleCommand(commandKey, message, conn.socket);
+                    final String response = handleCommand(commandKey, message, conn);
                     conn.out.println(response);
                     conn.out.flush();
                     continue;
@@ -137,6 +163,39 @@ public final class TcpServer implements Closeable {
         }
     }
 
+    private static void receiveToFile(ClientConnection conn, long bytes, Path target) throws IOException {
+        Files.createDirectories(target.getParent());
+
+        try (final var fileOut = Files.newOutputStream(target)) {
+            final byte[] buf = new byte[8192];
+            long remaining = bytes;
+
+            while (remaining > 0) {
+                int toRead = (int) Math.min(buf.length, remaining);
+                int read = conn.rawIn.read(buf, 0, toRead);
+                if (read == -1)
+                    throw new IOException("Stream closed while receiving file");
+                fileOut.write(buf, 0, read);
+                remaining -= read;
+            }
+            fileOut.flush();
+        }
+    }
+
+    private static void drain(ClientConnection conn, long bytes) throws IOException {
+        final byte[] buf = new byte[8192];
+        long remaining = bytes;
+
+        while (remaining > 0) {
+            final int toRead = (int) Math.min(buf.length, remaining);
+            final int read = conn.rawIn.read(buf, 0, toRead);
+            if (read == -1) {
+                throw new IOException("Stream closed while reading binary payload");
+            }
+            remaining -= read;
+        }
+    }
+
     private static String extractCommandKey(String raw) {
         if (raw == null)
             return "";
@@ -147,22 +206,37 @@ public final class TcpServer implements Closeable {
         return (space >= 0) ? s.substring(0, space) : s;
     }
 
-    private String handleCommand(String commandKey, String fullLine, Socket client) {
+    private String handleCommand(String commandKey, String fullLine, ClientConnection conn) {
         final var def = registry.resolve(commandKey);
-        if (def == null)
+        if (def == null) {
             return "Unknown command: " + commandKey;
+        }
 
         final var method = def.method();
+
         try {
-            final Object target = Modifier.isStatic(method.getModifiers())
+            final var target = Modifier.isStatic(method.getModifiers())
                     ? null
                     : container.get(def.ownerClass());
 
-            final Object[] args = resolveArguments(method, client, fullLine);
-            method.invoke(target, args);
+            final var args = resolveArguments(method, conn, fullLine);
 
-            if (client.isClosed())
+            // ✅ capture handler return value
+            final var result = method.invoke(target, args);
+
+            if (conn.socket.isClosed()) {
                 return "Connection closed by handler";
+            }
+
+            // ✅ if handler returns a String, use it as the server response
+            if (result instanceof String s) {
+                final String trimmed = s.trim();
+                if (!trimmed.isEmpty()) {
+                    return trimmed;
+                }
+            }
+
+            // fallback (void or non-string return)
             return "Handler executed successfully: " + method.getName();
 
         } catch (IllegalArgumentException ex) {
@@ -172,7 +246,10 @@ public final class TcpServer implements Closeable {
 
         } catch (IllegalAccessException | InvocationTargetException ex) {
             LOGGER.error("❌ Error executing handler {}", method.getName(), ex);
-            return "Error executing handler: " + ex.getMessage();
+            // If InvocationTargetException wraps a real exception, you can show its cause
+            // message:
+            final var cause = ex instanceof InvocationTargetException ite ? ite.getCause() : ex;
+            return "Error executing handler: " + (cause != null ? cause.getMessage() : ex.getMessage());
         }
     }
 
@@ -186,7 +263,7 @@ public final class TcpServer implements Closeable {
                 return;
             }
 
-            if (sock == sender) {
+            if (sock.getPort() == sender.getPort() && sock.getInetAddress().equals(sender.getInetAddress())) {
                 return;
             }
 
@@ -198,6 +275,7 @@ public final class TcpServer implements Closeable {
                 removeClient(sock);
             }
         });
+
     }
 
     private void removeClient(Socket client) {
@@ -243,21 +321,23 @@ public final class TcpServer implements Closeable {
         }
     }
 
-    private Object[] resolveArguments(Method method, Socket client, String fullLine) {
+    private Object[] resolveArguments(Method method, ClientConnection conn, String fullLine) {
         final var params = method.getParameterTypes();
         final var args = new Object[params.length];
 
-        final var ctx = new ServerCommandContext(this, client, fullLine);
+        final var ctx = new ServerCommandContext(this, conn.socket, fullLine, conn);
 
         for (int i = 0; i < params.length; i++) {
             if (params[i] == TcpServer.class) {
                 args[i] = this;
             } else if (params[i] == Socket.class) {
-                args[i] = client;
+                args[i] = conn.socket;
             } else if (params[i] == String.class) {
                 args[i] = fullLine;
             } else if (params[i] == ServerCommandContext.class) {
                 args[i] = ctx;
+            } else if (params[i] == TcpSession.class) {
+                args[i] = conn;
             } else {
                 throw new IllegalArgumentException("Unsupported parameter type: " + params[i].getName());
             }
@@ -266,18 +346,32 @@ public final class TcpServer implements Closeable {
         return args;
     }
 
-    public record ServerCommandContext(TcpServer server, Socket socket, String rawLine) {
+    public record ServerCommandContext(TcpServer server, Socket socket, String rawLine, TcpSession session) {
     }
 
-    private static final class ClientConnection implements Closeable {
+    private static final class ClientConnection implements Closeable, TcpSession {
         private final Socket socket;
-        private final BufferedReader in;
+
+        private final InputStream rawIn;
+        private final OutputStream rawOut;
+        private final LineReader lineReader;
+
         private final PrintWriter out;
+
+        // Future: binary mode state (for file transfer)
+        private volatile boolean binaryMode;
+        private volatile long binaryRemaining;
+
+        private volatile Path pendingBinaryPath;
 
         private ClientConnection(Socket socket) throws IOException {
             this.socket = socket;
-            this.in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
-            this.out = new PrintWriter(socket.getOutputStream(), true);
+            this.rawIn = socket.getInputStream();
+            this.rawOut = socket.getOutputStream();
+            this.lineReader = new LineReader(rawIn);
+            this.out = new PrintWriter(rawOut, true);
+            this.binaryMode = false;
+            this.binaryRemaining = 0;
         }
 
         private String id() {
@@ -287,17 +381,53 @@ public final class TcpServer implements Closeable {
         @Override
         public void close() throws IOException {
             try {
-                in.close();
+                rawIn.close();
             } catch (Exception ignored) {
             }
             try {
-                out.close();
+                rawOut.close();
             } catch (Exception ignored) {
             }
             try {
                 socket.close();
             } catch (Exception ignored) {
             }
+        }
+
+        @Override
+        public Socket socket() {
+            return socket;
+        }
+
+        @Override
+        public InputStream in() {
+            return rawIn;
+        }
+
+        @Override
+        public OutputStream out() {
+            return rawOut;
+        }
+
+        @Override
+        public void beginBinary(long bytes) {
+            binaryMode = true;
+            binaryRemaining = bytes;
+        }
+
+        @Override
+        public boolean isBinaryMode() {
+            return binaryMode;
+        }
+
+        @Override
+        public void setPendingBinaryTarget(Path target) {
+            pendingBinaryPath = target;
+        }
+
+        @Override
+        public Path getPendingBinaryTarget() {
+            return pendingBinaryPath;
         }
     }
 }

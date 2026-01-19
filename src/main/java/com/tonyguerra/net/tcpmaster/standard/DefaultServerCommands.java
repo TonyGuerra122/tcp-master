@@ -1,9 +1,11 @@
 package com.tonyguerra.net.tcpmaster.standard;
 
 import java.net.Socket;
+import java.nio.file.Path;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import com.tonyguerra.net.tcpmaster.configurations.Globals;
 import com.tonyguerra.net.tcpmaster.core.TcpServer;
 import com.tonyguerra.net.tcpmaster.enums.TcpType;
 import com.tonyguerra.net.tcpmaster.handlers.TcpHandler;
@@ -65,9 +67,12 @@ public final class DefaultServerCommands {
             return;
         }
 
-        msg = msg.replace("!broadcast", "").trim();
+        final String payload = msg.substring("!broadcast".length()).trim();
+        if (payload.isEmpty()) {
+            return;
+        }
 
-        server.broadcast(client, msg);
+        server.broadcast(client, payload);
     }
 
     /**
@@ -87,8 +92,88 @@ public final class DefaultServerCommands {
      * Usage: !unmute
      */
     @TcpHandler(command = "!unmute", type = TcpType.SERVER)
-    public void unmute(Socket client) {
+    public static void unmute(Socket client) {
         MUTED_CLIENTS.remove(clientId(client));
+    }
+
+    @TcpHandler(command = "!bin.begin", type = TcpType.SERVER)
+    public static void beginBinary(TcpServer.ServerCommandContext ctx) {
+        final String[] parts = ctx.rawLine().trim().split("\\s+");
+        if (parts.length < 2) {
+            return;
+        }
+
+        final long bytes;
+        try {
+            bytes = Long.parseLong(parts[1]);
+        } catch (NumberFormatException ex) {
+            return;
+        }
+
+        if (bytes <= 0) {
+            return;
+        }
+
+        ctx.session().beginBinary(bytes);
+    }
+
+    /**
+     * Upload a file to the server.
+     *
+     * Usage:
+     * !file.put <relativePath> <size>
+     *
+     * Example:
+     * !file.put docs/report.pdf 12345
+     *
+     * After this command, the client MUST send exactly <size> bytes via
+     * sendBinary().
+     */
+    @TcpHandler(command = "!file.put", type = TcpType.SERVER)
+    public static String filePut(TcpServer.ServerCommandContext ctx) {
+        final String[] parts = ctx.rawLine().trim().split("\\s+");
+        if (parts.length < 3) {
+            return "ERROR";
+        }
+
+        final String relative = parts[1];
+
+        final long size;
+        try {
+            size = Long.parseLong(parts[2]);
+        } catch (NumberFormatException ex) {
+            return "ERROR";
+        }
+
+        if (size <= 0) {
+            return "ERROR";
+        }
+
+        // Resolve and sanitized path (prevents ../ traversal)
+        final var target = safeResolver(Globals.getBaseDirUploads(), relative);
+
+        // Store pending target and switch to binary mode
+        final var session = ctx.session();
+        session.setPendingBinaryTarget(target);
+        session.beginBinary(size);
+
+        return "OK READY";
+    }
+
+    private static Path safeResolver(Path baseDir, String userPath) {
+        // Remove leading slashes to force "relative"
+        String cleanned = userPath.replace('\\', '/');
+        while (cleanned.startsWith("/")) {
+            cleanned = cleanned.substring(1);
+        }
+
+        final var target = baseDir.resolve(cleanned).normalize();
+
+        if (!target.startsWith(baseDir)) {
+            throw new IllegalArgumentException("Path traversal attempt: " + userPath);
+        }
+
+        return target;
     }
 
     private static String clientId(Socket client) {

@@ -3,6 +3,7 @@ package com.tonyguerra.net.tcpmaster.core;
 import java.io.BufferedReader;
 import java.io.Closeable;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
@@ -10,6 +11,8 @@ import java.lang.reflect.Modifier;
 import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Objects;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CompletableFuture;
@@ -25,6 +28,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.tonyguerra.net.tcpmaster.core.components.ProgressCallback;
 import com.tonyguerra.net.tcpmaster.di.Container;
 import com.tonyguerra.net.tcpmaster.enums.TcpType;
 import com.tonyguerra.net.tcpmaster.errors.TcpException;
@@ -262,6 +266,184 @@ public final class TcpClient implements Closeable {
         if (response == null)
             throw new TcpException("Timeout waiting server response");
         return response;
+    }
+
+    public void sendBinary(InputStream data, long size, ProgressCallback progress) throws IOException {
+        if (data == null)
+            throw new IllegalArgumentException("data must not be null");
+        if (size <= 0)
+            throw new IllegalArgumentException("size must be > 0");
+        if (!connected.get())
+            throw new IOException("Client not connected");
+
+        synchronized (lifecycleLock) {
+            if (socket == null || socket.isClosed())
+                throw new IOException("Socket is closed");
+
+            final var outStream = socket.getOutputStream();
+
+            final byte[] buffer = new byte[8192];
+            long remaining = size;
+            long sent = 0;
+
+            int lastPercent = -1;
+
+            while (remaining > 0) {
+                int toRead = (int) Math.min(buffer.length, remaining);
+                int read = data.read(buffer, 0, toRead);
+
+                if (read == -1) {
+                    throw new IOException("InputStream ended before sending expected " + size + " bytes");
+                }
+
+                outStream.write(buffer, 0, read);
+                sent += read;
+                remaining -= read;
+
+                if (progress != null) {
+                    final int percent = (int) ((sent * 100) / size);
+                    if (percent != lastPercent) {
+                        lastPercent = percent;
+                        progress.onProgress(sent, size); // ✅ (sentBytes, totalBytes)
+                    }
+                }
+            }
+
+            outStream.flush();
+
+            if (progress != null && lastPercent != 100) {
+                progress.onProgress(size, size);
+            }
+        }
+    }
+
+    public void sendBinary(InputStream data, long size) throws IOException {
+        sendBinary(data, size, null);
+    }
+
+    public String uploadFile(Path localFile, String remotePath, ProgressCallback progress)
+            throws TcpException, IOException {
+        if (localFile == null) {
+            throw new IllegalArgumentException("localFile must not be null");
+        }
+
+        if (remotePath == null || remotePath.isBlank()) {
+            throw new IllegalArgumentException("remotePath must not be null/blank");
+        }
+
+        // Optional: keep protocol simple
+        if (remotePath.contains(" ")) {
+            throw new IllegalArgumentException("remotePath must not contain spaces");
+        }
+
+        if (!Files.exists(localFile) || !Files.isRegularFile(localFile)) {
+            throw new IOException("Local file not found or not a regular file: " + localFile);
+        }
+
+        if (!connected.get()) {
+            throw new TcpException("No Server Connected");
+        }
+
+        final long size = Files.size(localFile);
+        if (size <= 0) {
+            throw new IOException("File is empty or size is invalid: " + localFile);
+        }
+
+        // 1) Tell server what is coming (NO extra "size" token)
+        final String initResp = sendMessage(String.format("!file.put %s %d",
+                remotePath, size), false);
+
+        // Only keep this check if your server actually returns "OK ..."
+        if (!initResp.startsWith("OK")) {
+            throw new TcpException("Server refused upload: " + initResp);
+        }
+
+        // 2) Send bytes
+        try (final var is = Files.newInputStream(localFile)) {
+            sendBinary(is, size, progress);
+        }
+
+        // 3) Read confirmation (OK STORED ...)
+        return readNextResponse();
+    }
+
+    public CompletableFuture<String> uploadFileAsync(Path localFile, String remotePath, ProgressCallback progress) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadFile(localFile, remotePath, progress);
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncExecutor);
+    }
+
+    public CompletableFuture<String> uploadFileAsync(Path localFile, String remotePath) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadFile(localFile, remotePath);
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncExecutor);
+    }
+
+    public CompletableFuture<String> uploadFileAsync(Path localFile, ProgressCallback progress) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadFile(localFile, localFile.getFileName().toString(), progress);
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncExecutor);
+    }
+
+    public CompletableFuture<String> uploadFileAsync(Path localFile) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadFile(localFile, localFile.getFileName().toString(), null);
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncExecutor);
+    }
+
+    public String uploadFile(Path localFile, ProgressCallback callback) throws TcpException, IOException {
+        return uploadFile(localFile, localFile.getFileName().toString(), callback);
+    }
+
+    public String uploadFile(Path localFile, String remotePath) throws TcpException, IOException {
+        return uploadFile(localFile, remotePath, null);
+    }
+
+    public String uploadFile(Path localFile) throws TcpException, IOException {
+        return uploadFile(localFile, localFile.getFileName().toString(), null);
+    }
+
+    public String readNextResponse(long timeoutMs) throws TcpException {
+        if (timeoutMs <= 0) {
+            throw new IllegalArgumentException("timeoutMs must be > 0");
+        }
+
+        if (!connected.get()) {
+            throw new TcpException("No Server Connected");
+        }
+
+        try {
+            final String response = responses.poll(timeoutMs, TimeUnit.MILLISECONDS);
+
+            if (response == null) {
+                throw new TcpException("Timeout waiting server response");
+            }
+
+            return response;
+        } catch (InterruptedException ex) {
+            Thread.currentThread().interrupt();
+            throw new TcpException("Interrupted while waiting server response");
+        }
+    }
+
+    public String readNextResponse() throws TcpException {
+        return readNextResponse(responseTimeoutMs);
     }
 
     public void disconnect() throws TcpException {

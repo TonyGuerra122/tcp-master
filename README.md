@@ -1,6 +1,6 @@
 # tcp-master
 
-A lightweight **TCP client/server library** for Java with **command-based handlers**, **annotation scanning**, and **simple dependency injection**.
+A lightweight **TCP client/server library** for Java with **command-based handlers**, **annotation scanning**, and a **simple dependency injection** container.
 
 Designed to be:
 - Easy to embed in **CLI**, **GUI**, or **desktop applications**
@@ -18,8 +18,8 @@ Designed to be:
 - ✅ Client-side and server-side command execution
 - ✅ Broadcast support
 - ✅ Simple DI container (no external framework)
-- ✅ GUI-friendly async API
-- ✅ Java Module support
+- ✅ GUI-friendly async APIs
+- ✅ Binary mode (file transfer over the same connection)
 - ✅ Maven Central ready
 
 ---
@@ -30,9 +30,9 @@ Designed to be:
 
 ```xml
 <dependency>
-    <groupId>io.github.tonyguerra122</groupId>
-    <artifactId>tcp-master</artifactId>
-    <version>0.0.1</version>
+  <groupId>io.github.tonyguerra122</groupId>
+  <artifactId>tcp-master</artifactId>
+  <version>0.1.0</version>
 </dependency>
 ```
 
@@ -51,13 +51,35 @@ Each command is mapped to a handler method using annotations.
 
 ---
 
+---
+## Built-in Commands
+The server ships with a few built-in commands (they can be overridden by user handlers):
+| Command       | Description                        |
+| ------------- | ---------------------------------- |
+| `!ping`       | Health check                       |
+| `!disconnect` | Disconnect current client          |
+| `!broadcast`  | Broadcast a message to all clients |
+| `!mute`       | Mute broadcasts from that client   |
+| `!unmute`     | Unmute broadcasts                  |
+
+You can override any built-in command by registering a handler with the same command.
+
+---
+
+## Override Rules
+If multiple handlers register the same command:
+1. **User-defined handlers win**
+2. Built-in defaults are used as fallback
+
+---
+
 ## Server Example
 ```java
 package com.example.server;
 
 import java.net.Socket;
 
-import com.tonyguerra.net.tcpmaster.annotations.TcpHandler;
+import com.tonyguerra.net.tcpmaster.handlers.TcpHandler;
 import com.tonyguerra.net.tcpmaster.enums.TcpType;
 
 public final class ServerCommands {
@@ -68,7 +90,7 @@ public final class ServerCommands {
     }
 }
 ```
-Supported server handler signatures:
+### Supported server handler signatures:
 ```
 ()
 (TcpServer)
@@ -77,7 +99,10 @@ Supported server handler signatures:
 (String)
 (Socket, String)
 (TcpServer, Socket, String)
+(ServerCommandContext)
+(TcpSession)
 ```
+Note: signatures depend on what your TcpServer supports via argument resolution.
 
 ---
 
@@ -135,6 +160,38 @@ Clients will receive:
 ```
 
 ---
+## File Transfer (Binary Mode)
+`tcp-master` supports binary payload transfer over the same TCP connection.
+### Upload Example (sync)
+```java
+Path file = Path.of("LICENSE.md");
+
+String confirm = client.uploadFile(
+  file,
+  "LICENSE.md",
+  (sent, total) -> {
+    int pct = (int)((sent * 100) / total);
+    System.out.print("\rUploading... " + pct + "%");
+  }
+);
+
+System.out.println("\nSERVER >> " + confirm);
+```
+### Upload example (async)
+```java
+client.uploadFileAsync(
+  Path.of("LICENSE.md"),
+  "LICENSE.md",
+  (sent, total) -> {
+    int pct = (int)((sent * 100) / total);
+    System.out.print("\rUploading... " + pct + "%");
+  }
+).thenAccept(confirm -> {
+  System.out.println("\nSERVER >> " + confirm);
+});
+```
+
+---
 
 ## Async & GUI-Friendly API
 Designed to work well with **Swing**, **JavaFX**, or other UI frameworks.
@@ -148,6 +205,18 @@ client.sendMessageAsync("hello")
       .thenAccept(System.out::println);
 ```
 
+---
+
+## Threading Model
+- The server accepts clients in a background accept thread.
+
+- Each client connection is handled by a worker thread from a pool.
+
+- The client reads socket messages on a dedicated reader thread.
+
+- Async APIs run on an internal `ExecutorService`.
+
+- For GUI apps, dispatch UI updates via `setEventDispatcher(...)`.
 ---
 
 ## Logging
