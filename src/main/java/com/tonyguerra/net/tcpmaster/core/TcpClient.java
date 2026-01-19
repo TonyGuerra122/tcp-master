@@ -5,7 +5,6 @@ import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.io.PrintWriter;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Modifier;
@@ -270,23 +269,18 @@ public final class TcpClient implements Closeable {
     }
 
     public void sendBinary(InputStream data, long size, ProgressCallback progress) throws IOException {
-        if (data == null) {
+        if (data == null)
             throw new IllegalArgumentException("data must not be null");
-        }
-        if (size <= 0) {
+        if (size <= 0)
             throw new IllegalArgumentException("size must be > 0");
-        }
-        if (!connected.get()) {
+        if (!connected.get())
             throw new IOException("Client not connected");
-        }
 
-        // IMPORTANT: Prevent text writes while binary is being sent
         synchronized (lifecycleLock) {
-            if (socket == null || socket.isClosed()) {
+            if (socket == null || socket.isClosed())
                 throw new IOException("Socket is closed");
-            }
 
-            final OutputStream outStream = socket.getOutputStream();
+            final var outStream = socket.getOutputStream();
 
             final byte[] buffer = new byte[8192];
             long remaining = size;
@@ -299,8 +293,7 @@ public final class TcpClient implements Closeable {
                 int read = data.read(buffer, 0, toRead);
 
                 if (read == -1) {
-                    throw new IOException(
-                            "InputStream ended before sending expected " + size + " bytes");
+                    throw new IOException("InputStream ended before sending expected " + size + " bytes");
                 }
 
                 outStream.write(buffer, 0, read);
@@ -309,13 +302,15 @@ public final class TcpClient implements Closeable {
 
                 if (progress != null) {
                     final int percent = (int) ((sent * 100) / size);
-                    progress.onProgress(sent, percent);
+                    if (percent != lastPercent) {
+                        lastPercent = percent;
+                        progress.onProgress(sent, size); // ✅ (sentBytes, totalBytes)
+                    }
                 }
             }
 
             outStream.flush();
 
-            // ensure 100% callback
             if (progress != null && lastPercent != 100) {
                 progress.onProgress(size, size);
             }
@@ -355,7 +350,8 @@ public final class TcpClient implements Closeable {
         }
 
         // 1) Tell server what is coming (NO extra "size" token)
-        final String initResp = sendMessage(String.format("!file.put %s %d", remotePath, size), false);
+        final String initResp = sendMessage(String.format("!file.put %s %d",
+                remotePath, size), false);
 
         // Only keep this check if your server actually returns "OK ..."
         if (!initResp.startsWith("OK")) {
@@ -371,8 +367,52 @@ public final class TcpClient implements Closeable {
         return readNextResponse();
     }
 
+    public CompletableFuture<String> uploadFileAsync(Path localFile, String remotePath, ProgressCallback progress) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadFile(localFile, remotePath, progress);
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncExecutor);
+    }
+
+    public CompletableFuture<String> uploadFileAsync(Path localFile, String remotePath) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadFile(localFile, remotePath);
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncExecutor);
+    }
+
+    public CompletableFuture<String> uploadFileAsync(Path localFile, ProgressCallback progress) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadFile(localFile, localFile.getFileName().toString(), progress);
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncExecutor);
+    }
+
+    public CompletableFuture<String> uploadFileAsync(Path localFile) {
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                return uploadFile(localFile, localFile.getFileName().toString(), null);
+            } catch (Exception ex) {
+                throw new CompletionException(ex);
+            }
+        }, asyncExecutor);
+    }
+
     public String uploadFile(Path localFile, ProgressCallback callback) throws TcpException, IOException {
         return uploadFile(localFile, localFile.getFileName().toString(), callback);
+    }
+
+    public String uploadFile(Path localFile, String remotePath) throws TcpException, IOException {
+        return uploadFile(localFile, remotePath, null);
     }
 
     public String uploadFile(Path localFile) throws TcpException, IOException {

@@ -208,21 +208,35 @@ public final class TcpServer implements Closeable {
 
     private String handleCommand(String commandKey, String fullLine, ClientConnection conn) {
         final var def = registry.resolve(commandKey);
-        if (def == null)
+        if (def == null) {
             return "Unknown command: " + commandKey;
+        }
 
-        final Method method = def.method();
+        final var method = def.method();
 
         try {
-            final Object target = Modifier.isStatic(method.getModifiers())
+            final var target = Modifier.isStatic(method.getModifiers())
                     ? null
                     : container.get(def.ownerClass());
 
-            final Object[] args = resolveArguments(method, conn, fullLine);
-            method.invoke(target, args);
+            final var args = resolveArguments(method, conn, fullLine);
 
-            if (conn.socket.isClosed())
+            // ✅ capture handler return value
+            final var result = method.invoke(target, args);
+
+            if (conn.socket.isClosed()) {
                 return "Connection closed by handler";
+            }
+
+            // ✅ if handler returns a String, use it as the server response
+            if (result instanceof String s) {
+                final String trimmed = s.trim();
+                if (!trimmed.isEmpty()) {
+                    return trimmed;
+                }
+            }
+
+            // fallback (void or non-string return)
             return "Handler executed successfully: " + method.getName();
 
         } catch (IllegalArgumentException ex) {
@@ -232,7 +246,10 @@ public final class TcpServer implements Closeable {
 
         } catch (IllegalAccessException | InvocationTargetException ex) {
             LOGGER.error("❌ Error executing handler {}", method.getName(), ex);
-            return "Error executing handler: " + ex.getMessage();
+            // If InvocationTargetException wraps a real exception, you can show its cause
+            // message:
+            final var cause = ex instanceof InvocationTargetException ite ? ite.getCause() : ex;
+            return "Error executing handler: " + (cause != null ? cause.getMessage() : ex.getMessage());
         }
     }
 

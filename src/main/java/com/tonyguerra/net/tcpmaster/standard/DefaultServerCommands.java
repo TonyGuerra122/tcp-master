@@ -130,10 +130,10 @@ public final class DefaultServerCommands {
      * sendBinary().
      */
     @TcpHandler(command = "!file.put", type = TcpType.SERVER)
-    public static void filePut(TcpServer.ServerCommandContext ctx) {
+    public static String filePut(TcpServer.ServerCommandContext ctx) {
         final String[] parts = ctx.rawLine().trim().split("\\s+");
         if (parts.length < 3) {
-            return;
+            return "ERROR";
         }
 
         final String relative = parts[1];
@@ -142,11 +142,11 @@ public final class DefaultServerCommands {
         try {
             size = Long.parseLong(parts[2]);
         } catch (NumberFormatException ex) {
-            return;
+            return "ERROR";
         }
 
         if (size <= 0) {
-            return;
+            return "ERROR";
         }
 
         // Resolve and sanitized path (prevents ../ traversal)
@@ -156,6 +156,8 @@ public final class DefaultServerCommands {
         final var session = ctx.session();
         session.setPendingBinaryTarget(target);
         session.beginBinary(size);
+
+        return "OK READY";
     }
 
     private static Path safeResolver(Path baseDir, String userPath) {
