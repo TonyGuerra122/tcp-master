@@ -6,7 +6,7 @@
 
     <groupId>io.github.tonyguerra122</groupId>
     <artifactId>tcp-master</artifactId>
-    <version>0.0.1</version>
+    <version>0.1.0</version>
     <name>tcp-master</name>
     <description>TCP client/server library with command handlers and DI support.</description>
     <url>https://github.com/TonyGuerra122/tcp-master</url>
@@ -172,6 +172,12 @@
                         </goals>
                     </execution>
                 </executions>
+                <configuration>
+                    <gpgArguments>
+                        <arg>--pinentry-mode</arg>
+                        <arg>loopback</arg>
+                    </gpgArguments>
+                </configuration>
             </plugin>
 
             <plugin>
