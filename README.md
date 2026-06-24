@@ -3,7 +3,7 @@
 > A lightweight **TCP client/server library** for Java 21+ with **command-based handlers**, **annotation scanning**, and **simple dependency injection**.
 
 [![Java](https://img.shields.io/badge/Java-21%2B-blue)](https://www.oracle.com/java/technologies/javase/jdk21-archive.html)
-[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.1.0-brightgreen)](https://mvnrepository.com)
+[![Maven Central](https://img.shields.io/badge/Maven%20Central-0.1.1-brightgreen)](https://mvnrepository.com)
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE.md)
 [![Tests](https://img.shields.io/badge/Tests-16%2F16%20Passing-success)]()
 
