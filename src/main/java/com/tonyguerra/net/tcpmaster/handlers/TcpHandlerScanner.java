@@ -14,14 +14,28 @@ import com.tonyguerra.net.tcpmaster.enums.TcpType;
 public final class TcpHandlerScanner {
 
     private static final String DEFAULTS_PACKAGE = "com.tonyguerra.net.tcpmaster.standard";
+    private static volatile Reflections cachedReflections;
 
     private TcpHandlerScanner() {
     }
 
+    /**
+     * Creates or returns cached Reflections instance.
+     * Scans only the tcp-master package (not entire classpath) to improve
+     * performance.
+     * Uses double-checked locking for lazy initialization.
+     */
     private static Reflections createReflections() {
-        return new Reflections(new ConfigurationBuilder()
-                .setUrls(ClasspathHelper.forJavaClassPath())
-                .addScanners(Scanners.MethodsAnnotated));
+        if (cachedReflections == null) {
+            synchronized (TcpHandlerScanner.class) {
+                if (cachedReflections == null) {
+                    cachedReflections = new Reflections(new ConfigurationBuilder()
+                            .setUrls(ClasspathHelper.forPackage("com.tonyguerra.net.tcpmaster"))
+                            .addScanners(Scanners.MethodsAnnotated));
+                }
+            }
+        }
+        return cachedReflections;
     }
 
     public static Map<String, HandlerDefinition> scanDefaults(TcpType type) {

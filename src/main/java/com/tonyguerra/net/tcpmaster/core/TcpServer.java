@@ -10,6 +10,7 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.SocketTimeoutException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.concurrent.ConcurrentHashMap;
@@ -48,6 +49,14 @@ public final class TcpServer implements Closeable {
     private ServerSocket serverSocket;
     private Thread acceptThread;
 
+    /**
+     * Creates a TCP server on the specified port.
+     * Handler discovery is performed immediately for both default and user-defined
+     * handlers.
+     *
+     * @param port the port to listen on (must be between 1 and 65535)
+     * @throws IllegalArgumentException if port is out of valid range
+     */
     public TcpServer(int port) {
         this.port = port;
         this.registry = new HandlerRegistry();
@@ -64,10 +73,48 @@ public final class TcpServer implements Closeable {
         registry.registerUser(TcpHandlerScanner.scanUserHandlers(TcpType.SERVER));
     }
 
+    /**
+     * Checks if the server is currently running.
+     *
+     * @return true if server is started and accepting connections
+     */
     public boolean isStarted() {
         return started.get();
     }
 
+    /**
+     * Gets the configured port number.
+     *
+     * @return the port this server is listening on
+     */
+    public int getPort() {
+        return port;
+    }
+
+    /**
+     * Gets the number of currently connected clients.
+     *
+     * @return the count of active client connections
+     */
+    public int getConnectedClientsCount() {
+        return clients.size();
+    }
+
+    /**
+     * Starts the TCP server in a background thread.
+     * The server will listen for incoming client connections on the configured
+     * port.
+     * <p>
+     * The accept thread is set to daemon mode and will not prevent JVM shutdown.
+     * A 30-second timeout is configured on the server socket to ensure graceful
+     * shutdown.
+     * </p>
+     *
+     * @throws TcpException if the server is already started or if binding to the
+     *                      port fails
+     * @see #isStarted()
+     * @see #close()
+     */
     public void start() throws TcpException {
         synchronized (lifecycleLock) {
             if (started.get()) {
@@ -76,9 +123,10 @@ public final class TcpServer implements Closeable {
 
             try {
                 serverSocket = new ServerSocket(port);
+                serverSocket.setSoTimeout(30_000); // 30-second timeout for graceful shutdown
                 started.set(true);
 
-                acceptThread = new Thread(this::acceptLoop, "TcpServer-AccpetThread");
+                acceptThread = new Thread(this::acceptLoop, "TcpServer-AcceptThread");
                 acceptThread.setDaemon(true);
                 acceptThread.start();
 
@@ -102,6 +150,9 @@ public final class TcpServer implements Closeable {
                 LOGGER.info("👤 New client connected: {}:{}", client.getInetAddress(), client.getPort());
 
                 clientPool.submit(() -> handleClient(conn));
+            } catch (SocketTimeoutException ex) {
+                // Normal timeout during graceful shutdown, continue loop
+                continue;
             } catch (IOException ex) {
                 if (started.get()) {
                     LOGGER.error("⚠️ Accept loop error", ex);
@@ -158,8 +209,14 @@ public final class TcpServer implements Closeable {
             }
         } catch (IOException ex) {
             LOGGER.warn("⚠️ Client communication error {}: {}", conn.id(), ex.getMessage());
+        } catch (Exception ex) {
+            LOGGER.error("❌ Unexpected error handling client {}", conn.id(), ex);
         } finally {
-            removeClient(conn.socket);
+            try {
+                removeClient(conn.socket);
+            } catch (Exception ex) {
+                LOGGER.error("❌ Error during cleanup for client {}", conn.id(), ex);
+            }
         }
     }
 
@@ -253,6 +310,17 @@ public final class TcpServer implements Closeable {
         }
     }
 
+    /**
+     * Broadcasts a message to all connected clients except the sender.
+     * <p>
+     * The message is prefixed with sender information:
+     * {@code [BROADCAST] ip:port -> message}
+     * If a client is disconnected during broadcast, it is automatically removed.
+     * </p>
+     *
+     * @param sender  the socket of the sending client (must not be null)
+     * @param message the message to broadcast (must not be null)
+     */
     public void broadcast(Socket sender, String message) {
         final String senderId = sender.getInetAddress() + ":" + sender.getPort();
         final String payload = String.format("[BROADCAST] %s -> %s", senderId, message);

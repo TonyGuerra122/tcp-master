@@ -21,6 +21,18 @@ public final class HandlerRegistry {
     }
 
     /** User overrides default if command clashes. */
+    /**
+     * Resolves a command to its handler definition.
+     * <p>
+     * User-defined handlers take precedence over default handlers.
+     * If both a user and a default handler exist for the same command,
+     * the user handler is returned.
+     * </p>
+     *
+     * @param command the command key (e.g., "!ping", "!broadcast")
+     * @return the handler definition, or null if no handler is found for this
+     *         command
+     */
     public HandlerDefinition resolve(String command) {
         final var u = user.get(command);
         if (u != null) {
@@ -31,6 +43,12 @@ public final class HandlerRegistry {
     }
 
     /** Merged view (user wins) */
+    /**
+     * Returns a merged view of all available handlers (user + default).
+     * User handlers override default handlers with the same command.
+     *
+     * @return an immutable map of all available handlers keyed by command string
+     */
     public Map<String, HandlerDefinition> mergedView() {
         final Map<String, HandlerDefinition> merged = new ConcurrentHashMap<>();
         merged.putAll(user);

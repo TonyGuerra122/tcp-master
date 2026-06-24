@@ -77,8 +77,22 @@ public final class TcpClient implements Closeable {
 
     private volatile ClientCommandPolicy commandPolicy;
 
+    /**
+     * Creates a TCP client for communication with a server.
+     * Handler discovery is performed immediately for both default and user-defined
+     * handlers.
+     *
+     * @param ip   the server IP address (must not be null)
+     * @param port the server port (must be between 1 and 65535)
+     * @throws NullPointerException     if ip is null
+     * @throws IllegalArgumentException if port is out of valid range
+     */
     public TcpClient(String ip, int port) {
         this.ip = Objects.requireNonNull(ip, "ip");
+        if (port <= 0 || port > 65535) {
+            throw new IllegalArgumentException(
+                    String.format("port must be between 1 and 65535, got: %d", port));
+        }
         this.port = port;
         this.container = new Container();
         this.connected = new AtomicBoolean(false);
@@ -204,10 +218,42 @@ public final class TcpClient implements Closeable {
         }
     }
 
+    /**
+     * Sends a message to the server (shorthand for
+     * {@link #sendMessage(String, boolean)} with true).
+     *
+     * @param message the message to send
+     * @return the server's response
+     * @throws TcpException if not connected or server doesn't respond
+     */
     public String sendMessage(String message) throws TcpException {
         return sendMessage(message, true);
     }
 
+    /**
+     * Sends a message to the server.
+     * <p>
+     * If {@code readCommand} is true and a local handler matches the command,
+     * it may handle the message locally depending on
+     * {@link #setCommandPolicy(ClientCommandPolicy)}.
+     * Otherwise, the message is sent to the server.
+     * </p>
+     * <p>
+     * This method blocks until either a response is received or the timeout
+     * expires.
+     * Default timeout is 10 seconds (configurable via
+     * {@link #setResponseTimeoutMs(long)}).
+     * </p>
+     *
+     * @param message     the message to send (must not be null or empty)
+     * @param readCommand if true, attempts to match local handlers first
+     * @return the server's response (or local handler response)
+     * @throws TcpException         if not connected, server doesn't respond, or
+     *                              handler fails
+     * @throws InterruptedException if the operation is interrupted
+     * @see #setCommandPolicy(ClientCommandPolicy)
+     * @see #setResponseTimeoutMs(long)
+     */
     public String sendMessage(String message, boolean readCommand) throws TcpException {
         if (!connected.get())
             throw new TcpException("No Server Connected");
@@ -256,12 +302,15 @@ public final class TcpClient implements Closeable {
     }
 
     private String sendRawToServer(String msg) throws TcpException, InterruptedException {
+        // Entire send + wait must be atomic to prevent race conditions
         synchronized (lifecycleLock) {
             if (!connected.get() || out == null)
                 throw new TcpException("No Server Connected");
             out.println(msg);
             out.flush();
         }
+        // Poll response OUTSIDE the synchronized block to avoid deadlock
+        // and to prevent blocking other threads during wait
         final String response = responses.poll(responseTimeoutMs, TimeUnit.MILLISECONDS);
         if (response == null)
             throw new TcpException("Timeout waiting server response");
